@@ -14,25 +14,43 @@ my Windows port of DuckDuckGo's on-device translation library, in a .NET + Chrom
 - Detects the page language and offers *"This page is in Hungarian. Translate to English"*.
 - Translates on-device with the same models Firefox uses (Bergamot / Marian, int8).
 - Keeps the page intact: links, bold text and footnotes survive (block-level HTML translation).
-- Visible text first, then the rest of the page; text the site adds later (pop-ups) is translated too.
-- *Show original* restores the page exactly.
+- Visible text first, then the rest of the page. Text the site adds later (pop-ups) is translated
+  too: a `MutationObserver` flags changes, so the page is only re-scanned when something changed.
+- *Show original* puts the original text back.
+- Language pairs without a direct model are pivoted through English (e.g. Hungarian → German).
 - Sites get no location, camera, microphone or notification permissions.
 
 ## Speed
 
-Pages go to the engine with `tk_translate_batch` on 8 worker threads: everything on screen in one
+Pages go to the engine with `tk_translate_batch` on 4 worker threads: everything on screen in one
 batch, then the rest in batches of 48 blocks. Ryzen 9 5900X, compared with one call per block on one
-thread (`TDB_SINGLE=1 TDB_WORKERS=1`):
+thread (`TDB_SINGLE=1 TDB_WORKERS=1`), measured back to back on the live pages:
 
 | page | first screen | whole page |
 |---|---|---|
-| telex.hu (HU → EN, 2.4k words) | 0.86 s → **0.52 s** | 5.1 s → **3.0 s** |
-| index.hu (HU → EN, 5k words) | 1.86 s → **0.77 s** | 9.2 s → **5.4 s** |
-| hu.wikipedia "Budapest" (HU → EN, 20k words) | 4.90 s → **1.25 s** | 39.3 s → **16.6 s** |
-| en.wikipedia "Privacy" (EN → HU, 17k words) | 2.39 s → **0.75 s** | 27.5 s → **10.0 s** |
+| telex.hu (HU → EN, 2.3k words) | 0.82 s → **0.46 s** | 5.2 s → **2.9 s** |
+| index.hu (HU → EN, 5.2k words) | 2.28 s → **0.75 s** | 10.0 s → **5.4 s** |
+| hu.wikipedia "Budapest" (HU → EN, 20k words) | 5.21 s → **1.41 s** | 41.2 s → **18.6 s** |
+| en.wikipedia "Privacy" (EN → HU, 17k words) | 2.56 s → **0.77 s** | 29.1 s → **11.3 s** |
 
-Running multi-threaded also surfaced a race in the engine (3 crashes in 10 runs), fixed in
-translate-kit as patch 0013 (0 crashes in 30 runs after).
+Each worker holds its own model replica, about 120 MB with these models, so 4 workers use about
+0.5 GB per loaded language pair. 8 workers were barely faster for twice the memory
+([numbers](https://github.com/sz-kristof/translate-kit/tree/windows-support#throughput-batches-and-workers)).
+`TDB_WORKERS` changes it.
+
+Running multi-threaded surfaced a use-after-free in the engine: each worker builds its model replica
+on its first batch, and the first one to finish freed the model memory the others were still reading
+(5 crashes in 22 runs). Fixed in translate-kit as
+[patch 0013](https://github.com/sz-kristof/translate-kit/commit/abcbb5d): 0 crashes in 16 runs.
+
+## Known limitations
+
+- A block is translated as one HTML fragment and written back with `innerHTML`, which keeps links and
+  formatting but drops JavaScript event listeners inside that block, so interactive widgets on
+  app-like pages can stop working until *Show original*. Firefox avoids this by mapping the translated
+  text back onto the existing DOM nodes; that would be the production approach.
+- New content is found by polling a `MutationObserver` flag every 1.5 s, not pushed to the host.
+- Memory grows by ~120 MB per worker, and models stay loaded until the app closes.
 
 ## Build and run
 
