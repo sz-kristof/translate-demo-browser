@@ -55,10 +55,11 @@ internal sealed class TranslationEngine : IDisposable
     readonly Dictionary<(string, string), IntPtr> _models = new();
     public IReadOnlyList<ModelPair> Pairs { get; }
 
-    /// Translation threads per model. Measured on a 12-core Ryzen 9 5900X: throughput
-    /// peaks at 8 (3,058 words/s) and drops at 12 (memory bandwidth), so cap there.
+    /// Translation threads per model. Each worker holds its own model replica (~120 MB
+    /// for the Hungarian models), so this trades memory for speed; 4 gets most of the
+    /// throughput at about half the memory of 8 (see README). TDB_WORKERS overrides.
     public static readonly int Workers = int.TryParse(Environment.GetEnvironmentVariable("TDB_WORKERS"), out var w) && w > 0
-        ? w : Math.Clamp(Environment.ProcessorCount / 3, 1, 8);
+        ? w : Math.Clamp(Environment.ProcessorCount / 4, 1, 4);
     public string Version { get; private set; } = "";
 
     public TranslationEngine(string modelsRoot)

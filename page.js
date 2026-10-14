@@ -14,6 +14,13 @@
   let seen = new WeakSet();   // text nodes already queued, so later passes only pick up new text
   let nextId = 1;
 
+  // Set when the site changes the page (pop-ups, infinite scroll), so the host only
+  // re-scans when there is something new. Our own apply()/restore() edits are dropped
+  // with takeRecords() before the observer callback can see them.
+  let dirty = false;
+  const observer = new MutationObserver(() => { dirty = true; });
+  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+
   const hasText = s => /[\p{L}]/u.test(s);
   const skipped = el => el.closest(SKIP) !== null;
 
@@ -84,6 +91,7 @@
       // innerHTML replaced the block's text nodes; don't pick the translations up again
       if (u.el) for (const w = document.createTreeWalker(u.el, NodeFilter.SHOW_TEXT); w.nextNode();) seen.add(w.currentNode);
     }
+    observer.takeRecords();
   }
 
   function restore() {
@@ -94,6 +102,8 @@
     }
     units = new Map();
     seen = new WeakSet();
+    observer.takeRecords();
+    dirty = false;
   }
 
   function sample() {
@@ -106,5 +116,6 @@
     apply: results => { apply(results); return results.length; },
     restore,
     sample,
+    takeDirty: () => { const d = dirty; dirty = false; return d; },
   };
 })();

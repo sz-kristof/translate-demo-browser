@@ -15,6 +15,8 @@ internal sealed class MainForm : Form
     static readonly Color Line = Color.FromArgb(222, 220, 212);
     static readonly Color Accent = Color.FromArgb(222, 88, 51);     // warm orange
     static readonly Color BarBg = Color.FromArgb(255, 246, 239);
+    static readonly Pen LinePen = new(Line);           // shared by the separator lines
+    static readonly ToolTip Tips = new();               // one tooltip provider for all buttons
 
     readonly TranslationEngine _engine;
     readonly string _pageJs;
@@ -47,11 +49,11 @@ internal sealed class MainForm : Form
 
         // ---- toolbar ---------------------------------------------------------------
         var toolbar = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Bg, Padding = new Padding(8, 8, 8, 8) };
-        toolbar.Paint += (_, e) => e.Graphics.DrawLine(new Pen(Line), 0, toolbar.Height - 1, toolbar.Width, toolbar.Height - 1);
-        _back = IconButton("", "Back");
-        _forward = IconButton("", "Forward");
-        _reload = IconButton("", "Reload");
-        _translateTool = new FlatButton { Text = "Translate", Width = 104, Dock = DockStyle.Right, Glyph = "" };
+        toolbar.Paint += (_, e) => e.Graphics.DrawLine(LinePen, 0, toolbar.Height - 1, toolbar.Width, toolbar.Height - 1);
+        _back = IconButton("\uE72B", "Back");
+        _forward = IconButton("\uE72A", "Forward");
+        _reload = IconButton("\uE72C", "Reload");
+        _translateTool = new FlatButton { Text = "Translate", Width = 104, Dock = DockStyle.Right, Glyph = "\uE8C1" };
         var addressHost = new RoundedPanel { Dock = DockStyle.Fill, BackColor = Color.White, Border = Line, Padding = new Padding(12, 7, 12, 0) };
         _address.BorderStyle = BorderStyle.None;
         _address.Dock = DockStyle.Fill;
@@ -70,13 +72,13 @@ internal sealed class MainForm : Form
         _infobar.BackColor = BarBg;
         _infobar.Padding = new Padding(14, 8, 10, 8);
         _infobar.Visible = false;
-        _infobar.Paint += (_, e) => e.Graphics.DrawLine(new Pen(Line), 0, _infobar.Height - 1, _infobar.Width, _infobar.Height - 1);
-        var badge = new Label { Text = "", Font = new Font("Segoe Fluent Icons", 14f), ForeColor = Accent, AutoSize = false, Width = 30, Dock = DockStyle.Left, TextAlign = ContentAlignment.MiddleLeft };
+        _infobar.Paint += (_, e) => e.Graphics.DrawLine(LinePen, 0, _infobar.Height - 1, _infobar.Width, _infobar.Height - 1);
+        var badge = new Label { Text = "\uE8C1", Font = new Font("Segoe Fluent Icons", 14f), ForeColor = Accent, AutoSize = false, Width = 30, Dock = DockStyle.Left, TextAlign = ContentAlignment.MiddleLeft };
         _infoText.AutoSize = false; _infoText.Dock = DockStyle.Left; _infoText.Width = 300; _infoText.ForeColor = Ink; _infoText.TextAlign = ContentAlignment.MiddleLeft;
         _targets.DropDownStyle = ComboBoxStyle.DropDownList; _targets.Dock = DockStyle.Left; _targets.Width = 130; _targets.FlatStyle = FlatStyle.Flat;
         _translateBtn = new FlatButton { Text = "Translate", Width = 100, Dock = DockStyle.Left, Primary = true };
         _originalBtn = new FlatButton { Text = "Show original", Width = 120, Dock = DockStyle.Left, Enabled = false };
-        _closeBar = IconButton("", "Close");
+        _closeBar = IconButton("\uE711", "Close");
         _closeBar.Dock = DockStyle.Right;
         _status.AutoSize = false; _status.Dock = DockStyle.Fill; _status.ForeColor = Muted; _status.TextAlign = ContentAlignment.MiddleRight;
         _status.Padding = new Padding(0, 0, 10, 0);
@@ -110,7 +112,7 @@ internal sealed class MainForm : Form
         _browser.LoadingStateChanged += (_, e) => BeginInvoke(() =>
         {
             _back.Enabled = e.CanGoBack; _forward.Enabled = e.CanGoForward;
-            _reload.Glyph = e.IsLoading ? "" : "";
+            _reload.Glyph = e.IsLoading ? "\uE711" : "\uE72C";
         });
         _browser.FrameLoadStart += (_, e) => { if (e.Frame.IsMain) BeginInvoke(ResetForNewPage); };
         _browser.FrameLoadEnd += (_, e) => { if (e.Frame.IsMain) BeginInvoke(() => _ = OnPageLoaded()); };
@@ -121,7 +123,7 @@ internal sealed class MainForm : Form
     static FlatButton IconButton(string glyph, string tip)
     {
         var b = new FlatButton { Glyph = glyph, Width = 36, Dock = DockStyle.Left };
-        new ToolTip().SetToolTip(b, tip);
+        Tips.SetToolTip(b, tip);
         return b;
     }
 
@@ -174,8 +176,11 @@ internal sealed class MainForm : Form
             _targets.Items.Clear();
             foreach (var t in targets) _targets.Items.Add(new LangItem(t));
             // Foreign page -> English; English page -> the user's Windows language, else Hungarian.
+            // TDB_TARGET forces the target (self-tests, e.g. the hu -> en -> de pivot).
             var ui = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
-            var preferred = lang != "en" && targets.Contains("en") ? "en"
+            var forced = Environment.GetEnvironmentVariable("TDB_TARGET");
+            var preferred = forced != null && targets.Contains(forced) ? forced
+                : lang != "en" && targets.Contains("en") ? "en"
                 : targets.Contains(ui) ? ui : targets.Contains("hu") ? "hu" : targets[0];
             _targets.SelectedItem = _targets.Items.Cast<LangItem>().First(i => i.Code == preferred);
             _infoText.Text = $"This page is in {LangName(lang)}.  Translate to";
@@ -218,10 +223,15 @@ internal sealed class MainForm : Form
         }
         await _browser.EvaluateScriptAsync("window.__tk.restore()");
         var restored = await _browser.EvaluateScriptAsync("document.body.innerText.slice(0, 400)");
-        var restoreOk = Equals(restored.Result, before.Result) ? "identical to original" : "DIFFERENT";
+        // Live sites change while the test runs (consent dialogs, tickers), so an exact
+        // text match is only expected on static pages; also check the language came back.
+        var (restoredLang, _) = await _engine.DetectAsync(restored.Result as string ?? "");
+        var restoreOk = Equals(restored.Result, before.Result) ? "identical to original"
+            : restoredLang == lang ? $"back in {lang} (the page changed during the test, so the text is not identical)"
+            : $"FAILED: restored text detected as {restoredLang}";
         File.WriteAllText(AutoTestOut + ".txt", $"restore: {restoreOk}\n" +
             $"timing: load {LastTiming.LoadMs} ms, first screen {LastTiming.FirstScreenMs} ms, total {LastTiming.TotalMs} ms, {LastTiming.Words} words\n" +
-            $"detected: {lang} {conf:0.00}\nstatus: {_status.Text}\n\n--- before ---\n{before.Result}\n\n--- after ---\n{after.Result}\n");
+            $"detected: {lang} {conf:0.00}\nstatus: {_status.Text}\n\n--- before ---\n{before.Result}\n\n--- restored ---\n{restored.Result}\n\n--- after ---\n{after.Result}\n");
         Close();
     }
 
@@ -338,7 +348,10 @@ internal sealed class MainForm : Form
             while (!ct.IsCancellationRequested && _translated)
             {
                 await Task.Delay(1500, ct);
-                await TranslatePending(route, ct, showProgress: false);
+                // page.js's MutationObserver says whether the site changed anything since
+                // the last pass; only then walk the DOM again.
+                var changed = await _browser.EvaluateScriptAsync("window.__tk && window.__tk.takeDirty()");
+                if (changed.Result is true) await TranslatePending(route, ct, showProgress: false);
             }
         }
         catch (OperationCanceledException) { }
@@ -362,6 +375,7 @@ internal sealed class MainForm : Form
 /// Flat button with an optional Segoe Fluent Icons glyph and hover state.
 internal sealed class FlatButton : Control
 {
+    static readonly Font IconFont = new("Segoe Fluent Icons", 11f);   // created once, not per paint
     bool _hover, _down;
     string _glyph = "";
     public bool Primary { get; set; }
@@ -399,15 +413,13 @@ internal sealed class FlatButton : Control
         var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding;
         if (string.IsNullOrEmpty(Text))
         {
-            using var icon = new Font("Segoe Fluent Icons", 11f);
-            TextRenderer.DrawText(g, Glyph, icon, r, fg, flags);
+            TextRenderer.DrawText(g, Glyph, IconFont, r, fg, flags);
         }
         else if (!string.IsNullOrEmpty(Glyph))
         {
-            using var icon = new Font("Segoe Fluent Icons", 11f);
             var tw = TextRenderer.MeasureText(Text, Font).Width;
             var x = (Width - tw - 22) / 2;
-            TextRenderer.DrawText(g, Glyph, icon, new Rectangle(x, r.Y, 20, r.Height), fg, flags);
+            TextRenderer.DrawText(g, Glyph, IconFont, new Rectangle(x, r.Y, 20, r.Height), fg, flags);
             TextRenderer.DrawText(g, Text, Font, new Rectangle(x + 22, r.Y, tw + 2, r.Height), fg, TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         }
         else TextRenderer.DrawText(g, Text, Font, r, fg, flags);
